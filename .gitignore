@@ -1,0 +1,28 @@
+# --- ローカル設定(端末ごと) ---
+config.ini
+
+# 監視ルール/ウィンドウ位置の記憶(端末ごと)
+sentinel_state.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# 実行時に生成されるキャプチャ/ログ
+*.log
+*.bin
+/captures/
+
+# PyInstaller ビルド生成物
+/build/
+/dist/
+*.spec
+
+# OS/エディタ
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
