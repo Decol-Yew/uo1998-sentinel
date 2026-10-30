@@ -37,12 +37,22 @@ HERE = _base_dir()
 CONFIG_PATH = os.path.join(HERE, "config.ini")
 STATE_PATH = os.path.join(HERE, "sentinel_state.json")
 
+# 判定モードの表示名(画面に出る文字列)。内部は "絶対値"/"％" で統一。
+MODE_ABS = "絶対値"   # 値そのもので判定
+MODE_PCT = "％"       # 最大に対する割合(%)で判定
+
+
+def _norm_mode(v):
+    """旧表記(abs/pct)や表記ゆれを内部表記(MODE_ABS/MODE_PCT)へ正規化。"""
+    return MODE_PCT if str(v).strip() in ("pct", "％", "%", MODE_PCT) else MODE_ABS
+
+
 # 監視する4ステータス: (キー, ラベル, 既定の条件, 既定閾値, 既定モード)
 STATS = [
-    ("hp", "HP", "<=", "30", "pct"),
-    ("mana", "マナ", ">=", "90", "pct"),
-    ("stam", "スタミナ", ">=", "90", "pct"),
-    ("weight", "重量", ">=", "90", "pct"),
+    ("hp", "HP", "<=", "30", MODE_PCT),
+    ("mana", "マナ", ">=", "90", MODE_PCT),
+    ("stam", "スタミナ", ">=", "90", MODE_PCT),
+    ("weight", "重量", ">=", "90", MODE_PCT),
 ]
 
 
@@ -69,8 +79,8 @@ class Sentinel:
         # 送らないので自前で算出する。このシャードの上限は「ベースSTR」で決まり、ブレスや
         # Potの一時STRでは増えない点に注意。
         #   max_weight>0 → その固定値を使う(ゲーム内で実測した上限が最も確実)
-        #   base_str>0   → 40 + 3.5*base_str で算出(無バフ時のベースSTRを入れる)
-        #   どちらも0    → 受信STR(現在値)から 40+3.5*str で概算(無バフ時のみ正確)
+        #   base_str>0   → STR*4 + 30 で算出(無バフ時のベースSTRを入れる)
+        #   どちらも0    → 受信STR(現在値)から STR*4+30 で算出(バフ中は実際と差が出る)
         self.cfg_max_weight = cfg.getint("filter", "max_weight", fallback=0)
         self.cfg_base_str = cfg.getint("filter", "base_str", fallback=0)
 
@@ -87,11 +97,23 @@ class Sentinel:
             game_port=self.game_port, iface=self.iface, debug=self.debug,
             scanner_factory=uo_stats.StatScanner, on_event=self._on_stat,
             on_status=lambda m: self._q.put(("status", m)),
+            on_connect=lambda src: self._q.put(("reconnect", src)),
         )
 
     # ---------- 受信(キャプチャスレッド → キュー) ----------
     def _on_stat(self, ev):
         self._q.put(("stat", ev))
+
+    def _redetect(self, reason=""):
+        """追跡中の自分(serial)と現在値をリセットし、次の本人ステータスで再検出する。
+        キャラ変更後や再接続時に呼ぶ。メインスレッドから呼ぶこと。"""
+        self._my = None
+        for k in self.cur:
+            self.cur[k] = [0, 0]
+        msg = "自分を再検出します。UOにキャラクターでログインしてください。"
+        if reason:
+            msg = f"{reason} {msg}"
+        self.status_var.set(msg)
 
     def _apply_event(self, ev):
         t = ev.get("t")
@@ -123,7 +145,7 @@ class Sentinel:
         if self.cfg_max_weight > 0:
             return self.cfg_max_weight
         if self.cfg_base_str > 0:
-            return int(40 + 3.5 * self.cfg_base_str)
+            return self.cfg_base_str * 4 + 30
         return ev.get("weight_max", 0)
 
     # ---------- ルール評価(ヒステリシス付き) ----------
@@ -138,7 +160,7 @@ class Sentinel:
                 thr = float(r["value"].get())
             except ValueError:
                 continue
-            if r["mode"].get() == "pct":
+            if r["mode"].get() == MODE_PCT:
                 val = (cur / mx * 100.0) if mx else 0.0
             else:
                 val = cur
@@ -182,10 +204,14 @@ class Sentinel:
         self.root.attributes("-topmost", True)
 
         head = tk.Frame(self.root, bg="#252526"); head.pack(fill="x")
+        # キャラ変更時の再検出ボタン(接続を入り直せば自動でも再検出するが、保険として手動も)
+        tk.Button(head, text="キャラ再検出", command=lambda: self._redetect("手動再検出:"),
+                  bg="#3a3d41", fg="#fff", relief="flat", font=("Yu Gothic UI", 9),
+                  padx=6).pack(side="right", padx=6, pady=4)
         self.status_var = tk.StringVar(value="受信待機中…UOにログイン(入り直すと確実)")
         tk.Label(head, textvariable=self.status_var, fg="#c5c5c5", bg="#252526",
-                 anchor="w", font=("Yu Gothic UI", 9), wraplength=540,
-                 justify="left").pack(fill="x", padx=8, pady=4)
+                 anchor="w", font=("Yu Gothic UI", 9), wraplength=430,
+                 justify="left").pack(side="left", fill="x", expand=True, padx=8, pady=4)
 
         # 見出し行
         grid = tk.Frame(self.root, bg="#1e1e1e"); grid.pack(fill="both", expand=True, padx=6, pady=4)
@@ -200,7 +226,7 @@ class Sentinel:
             en = tk.BooleanVar(value=s.get("enabled", False))
             cond = tk.StringVar(value=s.get("cond", dcond))
             val = tk.StringVar(value=s.get("value", dval))
-            mode = tk.StringVar(value=s.get("mode", dmode))
+            mode = tk.StringVar(value=_norm_mode(s.get("mode", dmode)))
             wav = tk.StringVar(value=s.get("wav", ""))
             keyv = tk.StringVar(value=s.get("key", ""))
             cv = tk.StringVar(value="-")
@@ -211,12 +237,12 @@ class Sentinel:
                            bg="#1e1e1e", fg="#e0e0e0", selectcolor="#1e1e1e",
                            activebackground="#1e1e1e", activeforeground="#fff",
                            font=("Yu Gothic UI", 9)).grid(row=i, column=0, sticky="w")
-            tk.Label(grid, textvariable=cv, fg="#d7ffd7", bg="#1e1e1e", width=9,
+            tk.Label(grid, textvariable=cv, fg="#d7ffd7", bg="#1e1e1e", width=14,
                      anchor="w", font=("Consolas", 10)).grid(row=i, column=1, sticky="w")
             tk.OptionMenu(grid, cond, ">=", "<=").grid(row=i, column=2, sticky="w")
             tk.Entry(grid, textvariable=val, width=5, bg="#2d2d30", fg="#fff",
                      insertbackground="#fff").grid(row=i, column=3, sticky="w", padx=2)
-            tk.OptionMenu(grid, mode, "abs", "pct").grid(row=i, column=4, sticky="w")
+            tk.OptionMenu(grid, mode, MODE_ABS, MODE_PCT).grid(row=i, column=4, sticky="w")
             wf = tk.Frame(grid, bg="#1e1e1e"); wf.grid(row=i, column=5, sticky="w")
             tk.Entry(wf, textvariable=wav, width=16, bg="#2d2d30", fg="#fff",
                      insertbackground="#fff").pack(side="left")
@@ -258,12 +284,19 @@ class Sentinel:
                     self.status_var.set(payload)
                 elif kind == "stat":
                     self._apply_event(payload)
+                elif kind == "reconnect":
+                    # 新規ゲーム接続(再ログイン/キャラ変更)→ 自分を取り直す
+                    self._redetect("接続を検出:")
         except queue.Empty:
             pass
         # 現在値の表示更新 + ルール評価
         for key, *_ in STATS:
             cur, mx = self.cur[key]
-            self.rules[key]["_cv"].set(f"{cur}/{mx}" if mx else str(cur))
+            r = self.rules[key]
+            if r["mode"].get() == MODE_PCT and mx:
+                r["_cv"].set(f"{cur}/{mx} ({int(cur / mx * 100)}%)")
+            else:
+                r["_cv"].set(f"{cur}/{mx}" if mx else str(cur))
         self._evaluate()
         self.root.after(200, self._poll)
 

@@ -196,7 +196,7 @@ class UOCapture:
     """
 
     def __init__(self, game_port, on_speech=None, on_status=None, iface=None, debug=False,
-                 scanner_factory=None, on_event=None):
+                 scanner_factory=None, on_event=None, on_connect=None):
         self.game_port = int(game_port)
         self.on_speech = on_speech
         # 1イベントごとのコールバック。on_event 優先、無ければ従来の on_speech。
@@ -204,6 +204,8 @@ class UOCapture:
         # 解凍後ストリームに通すスキャナの生成関数(接続ごとに呼ぶ)。既定=発話スキャナ。
         self._scanner_factory = scanner_factory or uo_packets.SpeechScanner
         self.on_status = on_status or (lambda m: None)
+        # 新規ゲーム接続(SYN-ACK)を掴むたびに src を引数に呼ぶ。キャラ変更後の再検出などに。
+        self.on_connect = on_connect or (lambda src: None)
         self.iface = iface or None
         self.debug = bool(debug)
         self._q: "queue.Queue" = queue.Queue()
@@ -367,6 +369,10 @@ class UOCapture:
                     dump_written = 0
                 self._status(f"ゲーム接続を検出: {src}:{self.game_port} の受信を監視します。")
                 logln(f"[{time.strftime('%H:%M:%S')}] SYNCED src={src} next_seq={next_seq}")
+                try:
+                    self.on_connect(src)
+                except Exception:  # noqa: BLE001
+                    pass
                 continue
             if kind == "data":
                 if not synced:

@@ -63,8 +63,10 @@ def parse_status(b):
         d["stam"], d["stam_max"] = stam_c, stam_m
         d["mana"], d["mana_max"] = mana_c, mana_m
         d["weight"] = weight
-        # 1998クライアントは maxWeight 未送(type=1)なので str から概算。
-        d["weight_max"] = int(40 + 3.5 * s)
+        # 1998クライアントは maxWeight 未送(type=1)なので str から算出。
+        # UO:1998シャードの実測較正: 最大重量 = STR*4 + 30
+        #   (STR59→266, STR60→270, STR93→402 がぴったり一致)。
+        d["weight_max"] = s * 4 + 30
         if typ >= 3 and len(b) >= 68:
             wm = _U16(b, 66)
             if 0 < wm <= 60000:
