@@ -65,6 +65,14 @@ class Sentinel:
             n.strip().lower() for n in cfg.get("filter", "self_names", fallback="").split(",")
             if n.strip()
         }
+        # 最大所持重量(stones)の決め方。1998仕様の 0x11(type=1)はサーバーが最大重量を
+        # 送らないので自前で算出する。このシャードの上限は「ベースSTR」で決まり、ブレスや
+        # Potの一時STRでは増えない点に注意。
+        #   max_weight>0 → その固定値を使う(ゲーム内で実測した上限が最も確実)
+        #   base_str>0   → 40 + 3.5*base_str で算出(無バフ時のベースSTRを入れる)
+        #   どちらも0    → 受信STR(現在値)から 40+3.5*str で概算(無バフ時のみ正確)
+        self.cfg_max_weight = cfg.getint("filter", "max_weight", fallback=0)
+        self.cfg_base_str = cfg.getint("filter", "base_str", fallback=0)
 
         self._q: "queue.Queue" = queue.Queue()
         self._my = None                      # 自分の serial
@@ -101,13 +109,22 @@ class Sentinel:
             if "mana" in ev:
                 self.cur["mana"] = [ev["mana"], ev["mana_max"]]
                 self.cur["stam"] = [ev["stam"], ev["stam_max"]]
-                self.cur["weight"] = [ev["weight"], ev.get("weight_max", 0)]
+                self.cur["weight"] = [ev["weight"], self._max_weight(ev)]
         elif t == "attrs":
             self.cur["hp"] = [ev["hp"], ev["hp_max"]]
             self.cur["mana"] = [ev["mana"], ev["mana_max"]]
             self.cur["stam"] = [ev["stam"], ev["stam_max"]]
         elif t in ("hp", "mana", "stam"):
             self.cur[t] = [ev["cur"], ev["max"]]
+
+    def _max_weight(self, ev):
+        """最大所持重量(stones)。設定優先。サーバーが送らない1998仕様では算出する。
+        ブレス/Potの一時STRでは増えない(ベースSTR依存)ため、設定値での固定を推奨。"""
+        if self.cfg_max_weight > 0:
+            return self.cfg_max_weight
+        if self.cfg_base_str > 0:
+            return int(40 + 3.5 * self.cfg_base_str)
+        return ev.get("weight_max", 0)
 
     # ---------- ルール評価(ヒステリシス付き) ----------
     def _evaluate(self):
