@@ -86,6 +86,7 @@ class Sentinel:
 
         self._q: "queue.Queue" = queue.Queue()
         self._my = None                      # 自分の serial
+        self._settings_win = None            # 設定ダイアログ(Toplevel)
         # 現在値: {stat: [cur, max]}
         self.cur = {k: [0, 0] for k, *_ in STATS}
         self.rules = {}                      # stat -> dict(vars) + _armed
@@ -195,7 +196,7 @@ class Sentinel:
                 self.root.iconbitmap(_ico)
         except Exception:  # noqa: BLE001
             pass
-        geo = (self._saved or {}).get("geometry", "560x300+200+120")
+        geo = self._fit_narrow((self._saved or {}).get("geometry", ""))
         try:
             self.root.geometry(geo)
         except tk.TclError:
@@ -204,24 +205,23 @@ class Sentinel:
         self.root.attributes("-topmost", True)
 
         head = tk.Frame(self.root, bg="#252526"); head.pack(fill="x")
-        # キャラ変更時の再検出ボタン(接続を入り直せば自動でも再検出するが、保険として手動も)
-        tk.Button(head, text="キャラ再検出", command=lambda: self._redetect("手動再検出:"),
-                  bg="#3a3d41", fg="#fff", relief="flat", font=("Yu Gothic UI", 9),
-                  padx=6).pack(side="right", padx=6, pady=4)
-        self.status_var = tk.StringVar(value="受信待機中…UOにログイン(入り直すと確実)")
+        self.status_var = tk.StringVar(value="受信待機中…UOにログイン")
         tk.Label(head, textvariable=self.status_var, fg="#c5c5c5", bg="#252526",
-                 anchor="w", font=("Yu Gothic UI", 9), wraplength=430,
-                 justify="left").pack(side="left", fill="x", expand=True, padx=8, pady=4)
+                 anchor="w", font=("Yu Gothic UI", 8), wraplength=210,
+                 justify="left").pack(fill="x", padx=6, pady=(4, 2))
+        btns = tk.Frame(head, bg="#252526"); btns.pack(fill="x", padx=4, pady=(0, 4))
+        tk.Button(btns, text="設定…", command=self._open_settings,
+                  bg="#3a3d41", fg="#fff", relief="flat", font=("Yu Gothic UI", 9),
+                  padx=6).pack(side="left", padx=2)
+        tk.Button(btns, text="キャラ再検出", command=lambda: self._redetect("手動再検出:"),
+                  bg="#3a3d41", fg="#fff", relief="flat", font=("Yu Gothic UI", 9),
+                  padx=6).pack(side="left", padx=2)
 
-        # 見出し行
+        # 本体はライブ表示のみ(細い縦長)。条件/WAV/キーは「設定…」ダイアログで編集。
+        # 各行: チェック(有効)＋ラベル / 現在値(値/最大(％)) / 設定中のしきい値
         grid = tk.Frame(self.root, bg="#1e1e1e"); grid.pack(fill="both", expand=True, padx=6, pady=4)
-        cols = ["監視", "現在値", "条件", "閾値", "値/%", "WAV", "キー"]
-        for c, t in enumerate(cols):
-            tk.Label(grid, text=t, fg="#9cdcfe", bg="#1e1e1e",
-                     font=("Yu Gothic UI", 9, "bold")).grid(row=0, column=c, padx=3, pady=2, sticky="w")
-
         saved_rules = (self._saved or {}).get("rules", {})
-        for i, (key, label, dcond, dval, dmode) in enumerate(STATS, start=1):
+        for i, (key, label, dcond, dval, dmode) in enumerate(STATS):
             s = saved_rules.get(key, {})
             en = tk.BooleanVar(value=s.get("enabled", False))
             cond = tk.StringVar(value=s.get("cond", dcond))
@@ -230,36 +230,106 @@ class Sentinel:
             wav = tk.StringVar(value=s.get("wav", ""))
             keyv = tk.StringVar(value=s.get("key", ""))
             cv = tk.StringVar(value="-")
+            rule = tk.StringVar(value="")
             self.rules[key] = {"enabled": en, "cond": cond, "value": val, "mode": mode,
-                               "wav": wav, "key": keyv, "_armed": True, "_cv": cv}
+                               "wav": wav, "key": keyv, "_armed": True,
+                               "_cv": cv, "_rule": rule}
 
-            tk.Checkbutton(grid, text=label, variable=en, width=7, anchor="w",
+            tk.Checkbutton(grid, text=label, variable=en, anchor="w",
                            bg="#1e1e1e", fg="#e0e0e0", selectcolor="#1e1e1e",
                            activebackground="#1e1e1e", activeforeground="#fff",
                            font=("Yu Gothic UI", 9)).grid(row=i, column=0, sticky="w")
-            tk.Label(grid, textvariable=cv, fg="#d7ffd7", bg="#1e1e1e", width=14,
-                     anchor="w", font=("Consolas", 10)).grid(row=i, column=1, sticky="w")
-            tk.OptionMenu(grid, cond, ">=", "<=").grid(row=i, column=2, sticky="w")
-            tk.Entry(grid, textvariable=val, width=5, bg="#2d2d30", fg="#fff",
-                     insertbackground="#fff").grid(row=i, column=3, sticky="w", padx=2)
-            tk.OptionMenu(grid, mode, MODE_ABS, MODE_PCT).grid(row=i, column=4, sticky="w")
-            wf = tk.Frame(grid, bg="#1e1e1e"); wf.grid(row=i, column=5, sticky="w")
-            tk.Entry(wf, textvariable=wav, width=16, bg="#2d2d30", fg="#fff",
-                     insertbackground="#fff").pack(side="left")
-            tk.Button(wf, text="…", command=lambda w=wav: self._pick_wav(w),
-                      bg="#3a3d41", fg="#fff", relief="flat", padx=3).pack(side="left", padx=1)
-            tk.Button(wf, text="▶", command=lambda w=wav: self._test_wav(w),
-                      bg="#3a3d41", fg="#fff", relief="flat", padx=3).pack(side="left")
-            tk.Entry(grid, textvariable=keyv, width=5, bg="#2d2d30", fg="#fff",
-                     insertbackground="#fff").grid(row=i, column=6, sticky="w", padx=2)
-
-        foot = tk.Frame(self.root, bg="#252526"); foot.pack(fill="x")
-        tk.Label(foot, text="値=そのもの / %=最大に対する割合。キーはF13〜F24推奨"
-                 "(AHKで F13:: 等を拾う)。", fg="#a0a0a0", bg="#252526",
-                 font=("Yu Gothic UI", 8), anchor="w", wraplength=540,
-                 justify="left").pack(fill="x", padx=8, pady=3)
+            tk.Label(grid, textvariable=cv, fg="#d7ffd7", bg="#1e1e1e", width=13,
+                     anchor="w", font=("Consolas", 10)).grid(row=i, column=1, sticky="w", padx=(4, 0))
+            tk.Label(grid, textvariable=rule, fg="#9cdcfe", bg="#1e1e1e", width=5,
+                     anchor="e", font=("Consolas", 10)).grid(row=i, column=2, sticky="e")
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ---------- 設定ダイアログ(条件/閾値/WAV/キーを編集) ----------
+    def _open_settings(self):
+        w = self._settings_win
+        if w is not None:
+            try:
+                if w.winfo_exists():
+                    w.deiconify(); w.lift(); return
+            except tk.TclError:
+                pass
+        win = tk.Toplevel(self.root); self._settings_win = win
+        win.title("Sentinel 設定"); win.configure(bg="#1e1e1e")
+        win.attributes("-topmost", True)
+        try:
+            _ico = os.path.join(getattr(sys, "_MEIPASS", HERE), "app.ico")
+            if os.path.exists(_ico):
+                win.iconbitmap(_ico)
+        except Exception:  # noqa: BLE001
+            pass
+
+        grid = tk.Frame(win, bg="#1e1e1e"); grid.pack(fill="both", expand=True, padx=8, pady=6)
+        for c, t in enumerate(["監視", "条件", "閾値", "値/%", "WAV", "キー"]):
+            tk.Label(grid, text=t, fg="#9cdcfe", bg="#1e1e1e",
+                     font=("Yu Gothic UI", 9, "bold")).grid(row=0, column=c, padx=3, pady=2, sticky="w")
+        for i, (key, label, *_rest) in enumerate(STATS, start=1):
+            r = self.rules[key]
+            tk.Checkbutton(grid, text=label, variable=r["enabled"], width=7, anchor="w",
+                           bg="#1e1e1e", fg="#e0e0e0", selectcolor="#1e1e1e",
+                           activebackground="#1e1e1e", activeforeground="#fff",
+                           font=("Yu Gothic UI", 9)).grid(row=i, column=0, sticky="w")
+            tk.OptionMenu(grid, r["cond"], ">=", "<=").grid(row=i, column=1, sticky="w")
+            tk.Entry(grid, textvariable=r["value"], width=5, bg="#2d2d30", fg="#fff",
+                     insertbackground="#fff").grid(row=i, column=2, sticky="w", padx=2)
+            tk.OptionMenu(grid, r["mode"], MODE_ABS, MODE_PCT).grid(row=i, column=3, sticky="w")
+            wf = tk.Frame(grid, bg="#1e1e1e"); wf.grid(row=i, column=4, sticky="w")
+            tk.Entry(wf, textvariable=r["wav"], width=16, bg="#2d2d30", fg="#fff",
+                     insertbackground="#fff").pack(side="left")
+            tk.Button(wf, text="…", command=lambda v=r["wav"]: self._pick_wav(v),
+                      bg="#3a3d41", fg="#fff", relief="flat", padx=3).pack(side="left", padx=1)
+            tk.Button(wf, text="▶", command=lambda v=r["wav"]: self._test_wav(v),
+                      bg="#3a3d41", fg="#fff", relief="flat", padx=3).pack(side="left")
+            tk.Entry(grid, textvariable=r["key"], width=5, bg="#2d2d30", fg="#fff",
+                     insertbackground="#fff").grid(row=i, column=5, sticky="w", padx=2)
+
+        foot = tk.Frame(win, bg="#252526"); foot.pack(fill="x")
+        tk.Label(foot, text="値=そのもの / %=最大に対する割合。キーはF13〜F24推奨(AHKで F13:: 等)。",
+                 fg="#a0a0a0", bg="#252526", font=("Yu Gothic UI", 8), anchor="w",
+                 wraplength=360, justify="left").pack(side="left", fill="x", expand=True, padx=8, pady=4)
+        tk.Button(foot, text="閉じる", command=self._close_settings,
+                  bg="#3a3d41", fg="#fff", relief="flat", font=("Yu Gothic UI", 9),
+                  padx=8).pack(side="right", padx=6, pady=4)
+        win.protocol("WM_DELETE_WINDOW", self._close_settings)
+
+    def _close_settings(self):
+        self._save_state()   # 設定変更を保存
+        w = self._settings_win
+        self._settings_win = None
+        if w is not None:
+            try:
+                w.destroy()
+            except tk.TclError:
+                pass
+
+    @staticmethod
+    def _rule_str(cond, value, mode):
+        """設定中のしきい値を短く表す(例: ≥90% / ≤30 / ≥40)。未設定は空。"""
+        v = (value or "").strip()
+        if not v:
+            return ""
+        sym = "≥" if cond == ">=" else "≤"
+        return f"{sym}{v}{'%' if mode == MODE_PCT else ''}"
+
+    @staticmethod
+    def _fit_narrow(geo):
+        """旧ワイド版の保存ジオメトリは幅/高さをコンパクト版へ詰める(位置は維持)。"""
+        if not geo:
+            return "230x210+200+120"
+        try:
+            size = geo.split("+")[0].split("-")[0]
+            w = int(size.split("x")[0])
+        except Exception:  # noqa: BLE001
+            return geo
+        if w <= 320:
+            return geo
+        return "230x210" + geo[len(size):]
 
     def _pick_wav(self, var):
         p = filedialog.askopenfilename(title="WAVを選択",
@@ -289,13 +359,15 @@ class Sentinel:
                     self._redetect("接続を検出:")
         except queue.Empty:
             pass
-        # 現在値の表示更新(値/最大と割合を常に併記) + ルール評価
+        # 現在値の表示更新(値/最大と割合を常に併記)＋設定中しきい値 + ルール評価
         for key, *_ in STATS:
             cur, mx = self.cur[key]
+            r = self.rules[key]
             if mx:
-                self.rules[key]["_cv"].set(f"{cur}/{mx} ({int(cur / mx * 100)}%)")
+                r["_cv"].set(f"{cur}/{mx} ({int(cur / mx * 100)}%)")
             else:
-                self.rules[key]["_cv"].set(str(cur))
+                r["_cv"].set(str(cur))
+            r["_rule"].set(self._rule_str(r["cond"].get(), r["value"].get(), r["mode"].get()))
         self._evaluate()
         self.root.after(200, self._poll)
 
