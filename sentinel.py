@@ -83,6 +83,10 @@ class Sentinel:
         #   どちらも0    → 受信STR(現在値)から STR*4+30 で算出(バフ中は実際と差が出る)
         self.cfg_max_weight = cfg.getint("filter", "max_weight", fallback=0)
         self.cfg_base_str = cfg.getint("filter", "base_str", fallback=0)
+        # 現在値の色分け(UOAssist風)。残量(%)がこの値以上で緑/黄/赤。実測既定: 緑68 黄35。
+        # HP/マナ/スタミナは「残量」、重量は「残り容量(=100-積載率)」で判定(多いほど緑)。
+        self.color_green = cfg.getint("filter", "color_green", fallback=68)
+        self.color_yellow = cfg.getint("filter", "color_yellow", fallback=35)
 
         self._q: "queue.Queue" = queue.Queue()
         self._my = None                      # 自分の serial
@@ -239,8 +243,10 @@ class Sentinel:
                            bg="#1e1e1e", fg="#e0e0e0", selectcolor="#1e1e1e",
                            activebackground="#1e1e1e", activeforeground="#fff",
                            font=("Yu Gothic UI", 9)).grid(row=i, column=0, sticky="w")
-            tk.Label(grid, textvariable=cv, fg="#d7ffd7", bg="#1e1e1e", width=13,
-                     anchor="w", font=("Consolas", 10)).grid(row=i, column=1, sticky="w", padx=(4, 0))
+            cvlbl = tk.Label(grid, textvariable=cv, fg="#d7ffd7", bg="#1e1e1e", width=13,
+                             anchor="w", font=("Consolas", 10))
+            cvlbl.grid(row=i, column=1, sticky="w", padx=(4, 0))
+            self.rules[key]["_cvlabel"] = cvlbl
             tk.Label(grid, textvariable=rule, fg="#9cdcfe", bg="#1e1e1e", width=5,
                      anchor="e", font=("Consolas", 10)).grid(row=i, column=2, sticky="e")
 
@@ -308,6 +314,14 @@ class Sentinel:
             except tk.TclError:
                 pass
 
+    def _color_for(self, remain_pct):
+        """残量(%)→色。緑(十分)/黄(注意)/赤(危険)。UOAssist風。"""
+        if remain_pct >= self.color_green:
+            return "#5fd35f"   # 緑
+        if remain_pct >= self.color_yellow:
+            return "#f2c744"   # 黄
+        return "#f14c4c"       # 赤
+
     @staticmethod
     def _rule_str(cond, value, mode):
         """設定中のしきい値を短く表す(例: ≥90% / ≤30 / ≥40)。未設定は空。"""
@@ -365,8 +379,12 @@ class Sentinel:
             r = self.rules[key]
             if mx:
                 r["_cv"].set(f"{cur}/{mx} ({int(cur / mx * 100)}%)")
+                # 残量(%)で色分け。重量は「残り容量(=100-積載率)」で判定(反転)。
+                remain = (mx - cur) / mx * 100 if key == "weight" else cur / mx * 100
+                r["_cvlabel"].configure(fg=self._color_for(remain))
             else:
                 r["_cv"].set(str(cur))
+                r["_cvlabel"].configure(fg="#808080")   # 未受信=灰
             r["_rule"].set(self._rule_str(r["cond"].get(), r["value"].get(), r["mode"].get()))
         self._evaluate()
         self.root.after(200, self._poll)
