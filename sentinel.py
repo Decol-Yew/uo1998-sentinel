@@ -38,13 +38,13 @@ CONFIG_PATH = os.path.join(HERE, "config.ini")
 STATE_PATH = os.path.join(HERE, "sentinel_state.json")
 
 # 判定モードの表示名(画面に出る文字列)。内部は "絶対値"/"％" で統一。
-MODE_ABS = "絶対値"   # 値そのもので判定
-MODE_PCT = "％"       # 最大に対する割合(%)で判定
+MODE_ABS = "値"   # 値そのもので判定
+MODE_PCT = "%"    # 最大に対する割合(%)で判定
 
 
 def _norm_mode(v):
-    """旧表記(abs/pct)や表記ゆれを内部表記(MODE_ABS/MODE_PCT)へ正規化。"""
-    return MODE_PCT if str(v).strip() in ("pct", "％", "%", MODE_PCT) else MODE_ABS
+    """旧表記(abs/pct/絶対値/％)や表記ゆれを内部表記(MODE_ABS/MODE_PCT)へ正規化。"""
+    return MODE_PCT if str(v).strip() in ("pct", "%", "％", MODE_PCT) else MODE_ABS
 
 
 # 監視する4ステータス: (キー, ラベル, 既定の条件, 既定閾値, 既定モード)
@@ -215,7 +215,7 @@ class Sentinel:
 
         # 見出し行
         grid = tk.Frame(self.root, bg="#1e1e1e"); grid.pack(fill="both", expand=True, padx=6, pady=4)
-        cols = ["監視", "現在値", "条件", "閾値", "絶対/％", "WAV", "キー"]
+        cols = ["監視", "現在値", "条件", "閾値", "値/%", "WAV", "キー"]
         for c, t in enumerate(cols):
             tk.Label(grid, text=t, fg="#9cdcfe", bg="#1e1e1e",
                      font=("Yu Gothic UI", 9, "bold")).grid(row=0, column=c, padx=3, pady=2, sticky="w")
@@ -254,7 +254,7 @@ class Sentinel:
                      insertbackground="#fff").grid(row=i, column=6, sticky="w", padx=2)
 
         foot = tk.Frame(self.root, bg="#252526"); foot.pack(fill="x")
-        tk.Label(foot, text="絶対=値そのもの / ％=最大に対する割合。キーはF13〜F24推奨"
+        tk.Label(foot, text="値=そのもの / %=最大に対する割合。キーはF13〜F24推奨"
                  "(AHKで F13:: 等を拾う)。", fg="#a0a0a0", bg="#252526",
                  font=("Yu Gothic UI", 8), anchor="w", wraplength=540,
                  justify="left").pack(fill="x", padx=8, pady=3)
@@ -289,14 +289,13 @@ class Sentinel:
                     self._redetect("接続を検出:")
         except queue.Empty:
             pass
-        # 現在値の表示更新 + ルール評価
+        # 現在値の表示更新(値/最大と割合を常に併記) + ルール評価
         for key, *_ in STATS:
             cur, mx = self.cur[key]
-            r = self.rules[key]
-            if r["mode"].get() == MODE_PCT and mx:
-                r["_cv"].set(f"{cur}/{mx} ({int(cur / mx * 100)}%)")
+            if mx:
+                self.rules[key]["_cv"].set(f"{cur}/{mx} ({int(cur / mx * 100)}%)")
             else:
-                r["_cv"].set(f"{cur}/{mx}" if mx else str(cur))
+                self.rules[key]["_cv"].set(str(cur))
         self._evaluate()
         self.root.after(200, self._poll)
 
