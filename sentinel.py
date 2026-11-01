@@ -123,9 +123,11 @@ class Sentinel:
         # 自分の serial を確定: 妥当性検査済みの 0x11(full)から。self_names 一致を優先、
         # 無ければ拡張ステータス(type>0 = mana を含む = 本人のステータス)で判定。
         if t == "full":
-            name = (ev.get("name") or "").lower()
+            nm_raw = ev.get("name") or ""
+            name = nm_raw.lower()
             if self._my is None and (name in self.self_names or "mana" in ev):
                 self._my = serial
+                self.status_var.set(f"監視中: {nm_raw}" if nm_raw else "監視中")
         if self._my is not None and serial != self._my:
             return
         if t == "full":
@@ -262,7 +264,19 @@ class Sentinel:
             w.bind("<Double-Button-1>", self._toggle_border)
             w.bind("<Button-1>", self._start_move)
             w.bind("<B1-Motion>", self._on_move)
+        # 右クリックメニュー(UOAM風)。タイトルバー非表示でも終了できる。
+        self._menu = tk.Menu(self.root, tearoff=0)
+        self._menu.add_command(label="タイトルバー 表示/非表示", command=self._toggle_border)
+        self._menu.add_separator()
+        self._menu.add_command(label="終了", command=self._on_close)
+        self.root.bind("<Button-3>", self._popup_menu)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _popup_menu(self, e):
+        try:
+            self._menu.tk_popup(e.x_root, e.y_root)
+        finally:
+            self._menu.grab_release()
 
     # ---------- ウィンドウ操作(移動 / タイトルバー切替) ----------
     def _set_borderless(self, on):
