@@ -115,10 +115,7 @@ class Sentinel:
         self._my = None
         for k in self.cur:
             self.cur[k] = [0, 0]
-        msg = "自分を再検出します。UOにキャラクターでログインしてください。"
-        if reason:
-            msg = f"{reason} {msg}"
-        self.status_var.set(msg)
+        self.status_var.set(f"{reason}: ログイン待ち" if reason else "再検出: ログイン待ち")
 
     def _apply_event(self, ev):
         t = ev.get("t")
@@ -200,24 +197,23 @@ class Sentinel:
                 self.root.iconbitmap(_ico)
         except Exception:  # noqa: BLE001
             pass
-        geo = self._fit_narrow((self._saved or {}).get("geometry", ""))
-        try:
-            self.root.geometry(geo)
-        except tk.TclError:
-            pass
+        # 前回のサイズ/位置をそのまま復元(無ければコンパクトな既定)。
+        self._geo = (self._saved or {}).get("geometry") or "230x210+200+120"
+        self._borderless = bool((self._saved or {}).get("borderless", False))
         self.root.configure(bg="#1e1e1e")
         self.root.attributes("-topmost", True)
 
         head = tk.Frame(self.root, bg="#252526"); head.pack(fill="x")
-        self.status_var = tk.StringVar(value="受信待機中…UOにログイン")
-        tk.Label(head, textvariable=self.status_var, fg="#c5c5c5", bg="#252526",
-                 anchor="w", font=("Yu Gothic UI", 8), wraplength=210,
-                 justify="left").pack(fill="x", padx=6, pady=(4, 2))
+        self.status_var = tk.StringVar(value="受信待機中: ログイン待ち")
+        self.status_lbl = tk.Label(head, textvariable=self.status_var, fg="#c5c5c5",
+                                    bg="#252526", anchor="w", font=("Yu Gothic UI", 8),
+                                    wraplength=220, justify="left")
+        self.status_lbl.pack(fill="x", padx=6, pady=(4, 2))
         btns = tk.Frame(head, bg="#252526"); btns.pack(fill="x", padx=4, pady=(0, 4))
         tk.Button(btns, text="設定…", command=self._open_settings,
                   bg="#3a3d41", fg="#fff", relief="flat", font=("Yu Gothic UI", 9),
                   padx=6).pack(side="left", padx=2)
-        tk.Button(btns, text="キャラ再検出", command=lambda: self._redetect("手動再検出:"),
+        tk.Button(btns, text="キャラ再検出", command=lambda: self._redetect("手動"),
                   bg="#3a3d41", fg="#fff", relief="flat", font=("Yu Gothic UI", 9),
                   padx=6).pack(side="left", padx=2)
 
@@ -250,7 +246,45 @@ class Sentinel:
             tk.Label(grid, textvariable=rule, fg="#9cdcfe", bg="#1e1e1e", width=5,
                      anchor="e", font=("Consolas", 10)).grid(row=i, column=2, sticky="e")
 
+        # タイトルバー無し(UOAM風)を先に適用してから位置を確定(ずれ防止)。
+        if self._borderless:
+            try:
+                self.root.overrideredirect(True)
+            except tk.TclError:
+                pass
+        try:
+            self.root.geometry(self._geo)
+        except tk.TclError:
+            pass
+        self.root.attributes("-topmost", True)
+        # 空き領域/見出しをドラッグで移動、ダブルクリックでタイトルバー表示を切替。
+        for w in (head, self.status_lbl, grid):
+            w.bind("<Double-Button-1>", self._toggle_border)
+            w.bind("<Button-1>", self._start_move)
+            w.bind("<B1-Motion>", self._on_move)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ---------- ウィンドウ操作(移動 / タイトルバー切替) ----------
+    def _set_borderless(self, on):
+        geo = self.root.geometry()
+        self._borderless = bool(on)
+        try:
+            self.root.overrideredirect(self._borderless)
+            self.root.geometry(geo)                 # 切替で位置がずれるのを戻す
+            self.root.attributes("-topmost", True)  # 最前面を再確保
+        except tk.TclError:
+            pass
+
+    def _toggle_border(self, _e=None):
+        self._set_borderless(not self._borderless)
+
+    def _start_move(self, e):
+        self._drag = (e.x_root - self.root.winfo_x(), e.y_root - self.root.winfo_y())
+
+    def _on_move(self, e):
+        d = getattr(self, "_drag", None)
+        if d:
+            self.root.geometry(f"+{e.x_root - d[0]}+{e.y_root - d[1]}")
 
     # ---------- 設定ダイアログ(条件/閾値/WAV/キーを編集) ----------
     def _open_settings(self):
@@ -332,18 +366,11 @@ class Sentinel:
         return f"{sym}{v}{'%' if mode == MODE_PCT else ''}"
 
     @staticmethod
-    def _fit_narrow(geo):
-        """旧ワイド版の保存ジオメトリは幅/高さをコンパクト版へ詰める(位置は維持)。"""
-        if not geo:
-            return "230x210+200+120"
-        try:
-            size = geo.split("+")[0].split("-")[0]
-            w = int(size.split("x")[0])
-        except Exception:  # noqa: BLE001
-            return geo
-        if w <= 320:
-            return geo
-        return "230x210" + geo[len(size):]
+    def _short_status(msg):
+        """狭い本体に1行で収まるよう、冗長な状態メッセージを短縮する。"""
+        if msg.startswith("ゲーム接続を検出"):
+            return "接続OK: 監視中"
+        return msg
 
     def _pick_wav(self, var):
         p = filedialog.askopenfilename(title="WAVを選択",
@@ -365,12 +392,12 @@ class Sentinel:
             while True:
                 kind, payload = self._q.get_nowait()
                 if kind == "status":
-                    self.status_var.set(payload)
+                    self.status_var.set(self._short_status(payload))
                 elif kind == "stat":
                     self._apply_event(payload)
                 elif kind == "reconnect":
                     # 新規ゲーム接続(再ログイン/キャラ変更)→ 自分を取り直す
-                    self._redetect("接続を検出:")
+                    self._redetect("接続検出")
         except queue.Empty:
             pass
         # 現在値の表示更新(値/最大と割合を常に併記)＋設定中しきい値 + ルール評価
@@ -404,7 +431,8 @@ class Sentinel:
             rules[key] = {"enabled": bool(r["enabled"].get()), "cond": r["cond"].get(),
                           "value": r["value"].get(), "mode": r["mode"].get(),
                           "wav": r["wav"].get(), "key": r["key"].get()}
-        data = {"geometry": self.root.geometry(), "rules": rules}
+        data = {"geometry": self.root.geometry(), "borderless": self._borderless,
+                "rules": rules}
         try:
             with open(STATE_PATH, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
